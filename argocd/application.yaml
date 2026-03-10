@@ -7,7 +7,7 @@ spec:
   project: default
 
   source:
-    repoURL: https://github.com/OleksandrZharkov/cicd-demo   # ← Replace!
+    repoURL: https://github.com/YOUR_GITHUB_USERNAME/cicd-demo   # ← Replace!
     targetRevision: HEAD
     path: helm/cicd-demo
 

@@ -1,9 +1,9 @@
-replicaCount: 1
+replicaCount: 2
 
 image:
-  repository: ozharkov/cicd-demo   # ← Replace with your Docker Hub username
+  repository: YOUR_DOCKERHUB_USERNAME/cicd-demo
   pullPolicy: IfNotPresent
-  tag: "5e81d18"
+  tag: "latest"
 
 service:
   type: NodePort
@@ -11,24 +11,35 @@ service:
   targetPort: 5000
   nodePort: 30080
 
+# OTel переменные окружения для приложения
+env:
+  - name: APP_VERSION
+    value: "2.0.0"
+  - name: OTEL_SERVICE_NAME
+    value: "cicd-demo"
+  - name: OTEL_EXPORTER_OTLP_ENDPOINT
+    value: "http://otel-collector:4317"
+  - name: ENVIRONMENT
+    value: "production"
+
 resources:
   limits:
     cpu: 200m
-    memory: 128Mi
+    memory: 256Mi
   requests:
     cpu: 100m
-    memory: 64Mi
+    memory: 128Mi
 
 livenessProbe:
   httpGet:
     path: /health
     port: 5000
-  initialDelaySeconds: 10
+  initialDelaySeconds: 15
   periodSeconds: 15
 
 readinessProbe:
   httpGet:
     path: /health
     port: 5000
-  initialDelaySeconds: 5
+  initialDelaySeconds: 10
   periodSeconds: 10

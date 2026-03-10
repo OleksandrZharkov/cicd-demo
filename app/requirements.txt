@@ -1,2 +1,12 @@
 flask==3.0.3
 gunicorn==22.0.0
+
+# OpenTelemetry core
+opentelemetry-api==1.25.0
+opentelemetry-sdk==1.25.0
+
+# Flask auto-instrumentation
+opentelemetry-instrumentation-flask==0.46b0
+
+# OTLP gRPC exporters (отправка в OTel Collector)
+opentelemetry-exporter-otlp-proto-grpc==1.25.0
