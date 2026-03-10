@@ -3,7 +3,7 @@ replicaCount: 1
 image:
   repository: ozharkov/cicd-demo   # ← Replace with your Docker Hub username
   pullPolicy: IfNotPresent
-  tag: "e71d597"
+  tag: "5e81d18"
 
 service:
   type: NodePort
