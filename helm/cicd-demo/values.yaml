@@ -1,7 +1,7 @@
 replicaCount: 2
 
 image:
-  repository: YOUR_DOCKERHUB_USERNAME/cicd-demo
+  repository: ozharkov/cicd-demo
   pullPolicy: IfNotPresent
   tag: "b360bf4"
 
