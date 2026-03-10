@@ -1,4 +1,4 @@
-replicaCount: 3
+replicaCount: 1
 
 image:
   repository: ozharkov/cicd-demo   # ← Replace with your Docker Hub username

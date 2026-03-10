@@ -3,4 +3,4 @@ name: cicd-demo
 description: Simple CI/CD demo application
 type: application
 version: 0.1.0
-appVersion: "2.0.0"
+appVersion: "3.0.0"
