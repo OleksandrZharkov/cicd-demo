@@ -3,7 +3,7 @@ replicaCount: 2
 image:
   repository: YOUR_DOCKERHUB_USERNAME/cicd-demo
   pullPolicy: IfNotPresent
-  tag: "latest"
+  tag: "b360bf4"
 
 service:
   type: NodePort
