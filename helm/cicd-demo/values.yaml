@@ -3,7 +3,7 @@ replicaCount: 2
 image:
   repository: ozharkov/cicd-demo
   pullPolicy: IfNotPresent
-  tag: "8a4ba6a"
+  tag: "34e39a5"
 
 service:
   type: NodePort
