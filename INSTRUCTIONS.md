@@ -1,312 +1,242 @@
-# ИНСТРУКЦИИ: CI/CD с GitHub Actions + ArgoCD + Minikube + Helm
+# Production CI/CD: Полная инструкция
 
-## Архитектура проекта
+## Архитектура пайплайна
 
 ```
-┌─────────────┐    git push     ┌──────────────────┐
-│  Developer  │ ─────────────▶  │   GitHub Actions  │
-│  (local)    │                 │                  │
-└─────────────┘                 │  1. Build image  │
-                                │  2. Push to Hub  │
-                                │  3. Update tag   │
-                                └────────┬─────────┘
-                                         │ commit values.yaml
-                                         ▼
-                                ┌──────────────────┐
-                                │   GitHub Repo    │
-                                │  helm/values.yaml│
-                                └────────┬─────────┘
-                                         │ watches repo
-                                         ▼
-┌─────────────────────────────────────────────────────┐
-│  Minikube Cluster                                   │
-│                                                     │
-│  ┌──────────┐   sync   ┌──────────────────────┐    │
-│  │  ArgoCD  │ ───────▶ │  cicd-demo namespace  │   │
-│  │          │          │  (Helm release)        │   │
-│  └──────────┘          │  Pod1  Pod2            │   │
-│                        └──────────────────────┘    │
-└─────────────────────────────────────────────────────┘
+git push (main)
+    │
+    ▼
+┌─────────────────────────────────────────────────────────────┐
+│  GitHub Actions — 6 Jobs последовательно                    │
+│                                                             │
+│  1. lint          Hadolint + Black + Flake8                 │
+│     │                                                       │
+│  2. test          Pytest + Coverage (>80%)                  │
+│     │                                                       │
+│  3. build         Docker Buildx (local, no push)            │
+│     │                                                       │
+│  4. security-scan Trivy → GitHub Security tab               │
+│     │                                                       │
+│  5. push          Docker Hub (SHA tag + latest)             │
+│     │                                                       │
+│  6. deploy        sed values.yaml → git commit → push       │
+└─────────────────────────────────────────────────────────────┘
+    │
+    ▼ ArgoCD polling (3 мин)
+┌─────────────────────────────────────────────────────────────┐
+│  Minikube                                                   │
+│  ArgoCD → Helm RollingUpdate → cicd-prod pods              │
+│        ↘                                                    │
+│          OTel Collector → Jaeger UI                         │
+└─────────────────────────────────────────────────────────────┘
 ```
-
-**Полный CI/CD цикл:**
-`git push` → GitHub Actions builds Docker image → pushes to Docker Hub →
-updates `values.yaml` tag in repo → ArgoCD detects change →
-Helm deploys new version to Minikube → приложение обновлено ✅
 
 ---
 
-## ЧАСТЬ 1 — Подготовка (один раз)
+## Что нового по сравнению с предыдущим проектом
 
-### Шаг 1.1 — GitHub: создай репозиторий
+| Компонент | cicd-demo (базовый) | cicd-prod (продакшн) |
+|---|---|---|
+| Dockerfile lint | ❌ | ✅ Hadolint |
+| Python lint | ❌ | ✅ Black + Flake8 |
+| Unit tests | ❌ | ✅ Pytest + Coverage |
+| Security scan | ❌ | ✅ Trivy → GitHub Security tab |
+| Non-root user | ❌ | ✅ UID 1001 |
+| SecurityContext | ❌ | ✅ capabilities drop ALL |
+| Separate probes | ❌ | ✅ /health + /ready |
+| Metrics histogram | ❌ | ✅ latency histogram |
+| RollingUpdate | ❌ | ✅ maxUnavailable=0 |
+| pipeline cancel | ❌ | ✅ concurrency |
 
-1. Зайди на https://github.com → **New repository**
-2. Имя: `cicd-demo`
-3. Visibility: **Public**
-4. **Не** добавляй README (мы пушим свой)
-5. Нажми **Create repository**
+---
 
-### Шаг 1.2 — Docker Hub: создай Access Token
+## ЧАСТЬ 1 — Подготовка GitHub
 
-1. Зайди на https://hub.docker.com → Account Settings → Security
-2. **New Access Token** → имя: `github-actions` → permission: **Read/Write**
-3. **Скопируй токен** — он показывается только один раз!
+### Шаг 1.1 — Создай новый репозиторий
+1. GitHub → New repository → имя: `cicd-prod`
+2. Visibility: **Public**
+3. Без README
 
-### Шаг 1.3 — GitHub: добавь секреты
+### Шаг 1.2 — Добавь секреты
+GitHub → Settings → Secrets and variables → Actions:
 
-Зайди в репозиторий → **Settings** → **Secrets and variables** → **Actions** → **New repository secret**
-
-Добавь три секрета:
 ```
-DOCKERHUB_USERNAME  = твой_логин_на_dockerhub
-DOCKERHUB_TOKEN     = токен_из_шага_1.2
-GH_PAT              = (создай ниже)
+DOCKERHUB_USERNAME  = твой Docker Hub логин
+DOCKERHUB_TOKEN     = токен из Docker Hub (Settings → Security → New Token)
+GH_PAT              = Personal Access Token (Settings → Developer → PAT classic → scope: repo)
 ```
 
-**Создание GH_PAT (Personal Access Token):**
-GitHub → Settings (личный аккаунт) → Developer settings →
-Personal access tokens → Tokens (classic) → Generate new token →
-Scopes: ✅ **repo** (все) → Generate → скопируй токен → сохрани как `GH_PAT`
+### Шаг 1.3 — Включи GitHub Security tab (для Trivy)
+Repo → Settings → Security → **Code security and analysis** → 
+Code scanning → **Enable**
 
-### Шаг 1.4 — Отредактируй проект под себя
+---
+
+## ЧАСТЬ 2 — Настройка проекта
 
 ```bash
-cd ~/cicd-demo
+cd ~/cicd-prod
 
-# Замени YOUR_DOCKERHUB_USERNAME в values.yaml
+# Замени Docker Hub username
 YOUR_DH_USER="твой_dockerhub_логин"
-sed -i "s|YOUR_DOCKERHUB_USERNAME|$YOUR_DH_USER|g" helm/cicd-demo/values.yaml
+sed -i '' "s|YOUR_DOCKERHUB_USERNAME|$YOUR_DH_USER|g" helm/cicd-prod/values.yaml
 
-# Замени YOUR_GITHUB_USERNAME в application.yaml
+# Замени GitHub username
 YOUR_GH_USER="твой_github_логин"
-sed -i "s|YOUR_GITHUB_USERNAME|$YOUR_GH_USER|g" argocd/application.yaml
+sed -i '' "s|YOUR_GITHUB_USERNAME|$YOUR_GH_USER|g" argocd/application.yaml
 
-# Проверь:
-grep "repository" helm/cicd-demo/values.yaml
-grep "repoURL" argocd/application.yaml
+# Проверь
+grep "repository" helm/cicd-prod/values.yaml
+grep "repoURL"    argocd/application.yaml
 ```
 
-### Шаг 1.5 — Первый пуш в GitHub
+### Первый пуш
 
 ```bash
-cd ~/cicd-demo
-
+cd ~/cicd-prod
 git init
 git add .
-git commit -m "initial: CI/CD demo project"
+git commit -m "initial: production CI/CD project"
 git branch -M main
-git remote add origin https://github.com/ТВОЙ_GH_USERNAME/cicd-demo.git
+git remote add origin https://github.com/ТВОЙ_USERNAME/cicd-prod.git
 git push -u origin main
 ```
 
 ---
 
-## ЧАСТЬ 2 — Проверка GitHub Actions (CI)
-
-### Шаг 2.1 — Наблюдай за пайплайном
+## ЧАСТЬ 3 — Наблюдение за пайплайном
 
 ```bash
-# Зайди на GitHub → вкладка Actions → видишь workflow "CI/CD Pipeline"
-# Первый запуск: Build & Push (~2-3 мин) + Update Helm tag (~30 сек)
+# GitHub → Actions → "Production CI/CD Pipeline"
+# Должны выполниться последовательно:
+# lint (~1 мин) → test (~2 мин) → build (~3 мин) → security-scan (~2 мин)
+# → push (~1 мин) → deploy (~30 сек)
 ```
 
-### Шаг 2.2 — Проверь Docker Hub
-
-```bash
-# Зайди на https://hub.docker.com → твой репозиторий cicd-demo
-# Должны появиться теги: latest + SHORT_SHA (например a1b2c3d)
-```
-
-### Шаг 2.3 — Проверь коммит с обновлённым тегом
-
-```bash
-git pull
-git log --oneline -3
-# Должен быть коммит: "ci: update image tag to a1b2c3d [skip ci]"
-
-cat helm/cicd-demo/values.yaml | grep tag
-# tag: "a1b2c3d"
-```
+**Где смотреть результаты:**
+- Lint: вкладка Actions → job "Lint" → шаги Hadolint, Black, Flake8
+- Tests: вкладка Actions → job "Unit Tests" → видишь coverage
+- Security: вкладка **Security** → Code scanning alerts → Trivy результаты
+- Artifacts: вкладка Actions → Summary → Artifacts (coverage-report, trivy-results)
 
 ---
 
-## ЧАСТЬ 3 — Запуск Minikube
+## ЧАСТЬ 4 — Деплой в Minikube
 
 ```bash
-# Запусти Minikube (если не запущен)
-minikube start --driver=docker
-
-# Проверь статус
+# Убедись что Minikube и ArgoCD запущены
 minikube status
-kubectl get nodes
-
-# Убедись что ArgoCD установлен
 kubectl get pods -n argocd
-```
 
----
-
-## ЧАСТЬ 4 — Настройка ArgoCD
-
-### Шаг 4.1 — Получи пароль ArgoCD
-
-```bash
-# Получи начальный пароль
-kubectl -n argocd get secret argocd-initial-admin-secret \
-  -o jsonpath="{.data.password}" | base64 -d
-echo ""   # перевод строки
-```
-
-### Шаг 4.2 — Войди в ArgoCD UI
-
-```bash
-# Проброс порта (оставь этот терминал открытым!)
-kubectl port-forward svc/argocd-server -n argocd 8080:443
-```
-
-Открой в браузере: https://localhost:8080
-- Username: `admin`
-- Password: из шага 4.1
-
-### Шаг 4.3 — Создай ArgoCD Application
-
-**Способ 1 — через kubectl (рекомендуется):**
-```bash
-kubectl apply -f ~/cicd-demo/argocd/application.yaml
-```
-
-**Способ 2 — через UI:**
-1. ArgoCD UI → **+ NEW APP**
-2. Application Name: `cicd-demo`
-3. Project: `default`
-4. Repository URL: `https://github.com/ТВОЙ_USERNAME/cicd-demo`
-5. Revision: `HEAD`
-6. Path: `helm/cicd-demo`
-7. Cluster: `https://kubernetes.default.svc`
-8. Namespace: `default`
-9. **CREATE**
-
-### Шаг 4.4 — Синхронизируй приложение
-
-```bash
-# Через kubectl (установи argocd CLI если нужно):
-# Или просто нажми SYNC в UI ArgoCD
+# Задеплой ArgoCD application
+kubectl apply -f ~/cicd-prod/argocd/application.yaml
 
 # Проверь статус
-kubectl get pods -n default
-kubectl get svc -n default
+kubectl get application cicd-prod -n argocd
+kubectl get pods -l app=cicd-prod
 ```
 
 ---
 
-## ЧАСТЬ 5 — Проверь работающее приложение
+## ЧАСТЬ 5 — Тест приложения
 
 ```bash
-# Получи URL приложения в Minikube
-minikube service cicd-demo-svc --url
+# Терминал 1 — проброс порта приложения
+kubectl port-forward svc/cicd-prod-svc 8082:80
 
-# Или используй port-forward
-kubectl port-forward svc/cicd-demo-svc 8081:80
+# Терминал 2 — тесты
+curl http://localhost:8082/
+curl http://localhost:8082/health
+curl http://localhost:8082/ready
+curl http://localhost:8082/work
 
-# Тест в новом терминале:
-curl http://localhost:8081/
-curl http://localhost:8081/health
-```
-
-**Ожидаемый ответ:**
-```json
-{
-  "message": "Hello from CI/CD Demo!",
-  "version": "1.0.0",
-  "status": "ok"
-}
+# Генерация трафика для метрик
+for i in {1..20}; do
+  curl -s http://localhost:8082/ > /dev/null
+  curl -s http://localhost:8082/work > /dev/null
+done
 ```
 
 ---
 
-## ЧАСТЬ 6 — Тест полного CI/CD цикла
+## ЧАСТЬ 6 — Просмотр трейсов в Jaeger
 
 ```bash
-cd ~/cicd-demo
+# Терминал 3
+kubectl port-forward svc/jaeger-query 16686:16686
+# → http://localhost:16686 → Service: cicd-prod → Find Traces
+```
 
-# Сделай изменение в коде
-sed -i 's/Hello from CI\/CD Demo!/Hello from CI\/CD Demo v2!/g' app/app.py
+---
 
-# Также обнови версию в Chart.yaml
-sed -i 's/appVersion: "1.0.0"/appVersion: "2.0.0"/' helm/cicd-demo/Chart.yaml
+## ЧАСТЬ 7 — Тест полного цикла обновления
 
-# Запушь изменение
+```bash
+cd ~/cicd-prod
+
+# Измени версию и сообщение
+sed -i '' "s|Production CI/CD Demo|Production CI/CD Demo v2|g" app/app.py
+sed -i '' "s|appVersion: \"1.0.0\"|appVersion: \"2.0.0\"|" helm/cicd-prod/Chart.yaml
+
+# Обнови тест под новое сообщение
+# (в test_app.py строка: assert "message" in data  — не нужно менять)
+
 git add .
-git commit -m "feat: update greeting message to v2"
+git commit -m "feat: update to v2"
 git push
-```
-
-**Что произойдёт автоматически:**
-1. GitHub Actions запустит пайплайн (~3 мин)
-2. Новый Docker image запушится на Docker Hub
-3. Автоматически обновится `values.yaml` с новым тегом
-4. ArgoCD обнаружит изменение в репозитории (~3 мин polling)
-5. ArgoCD задеплоит новую версию через Helm
-
-```bash
-# Наблюдай за обновлением подов в реальном времени:
-kubectl get pods -w
-
-# Проверь новую версию:
-curl http://localhost:8081/
+# Наблюдай пайплайн → ~10 мин → новая версия в Minikube
 ```
 
 ---
 
-## ЧАСТЬ 7 — Полезные команды для собеседования
+## Rollback (важно для собеседования!)
 
 ```bash
-# === ArgoCD ===
-kubectl get applications -n argocd                        # список приложений
-kubectl describe application cicd-demo -n argocd          # детали приложения
-kubectl get events -n default --sort-by='.lastTimestamp'  # события кластера
+# Способ 1 — Helm rollback (быстрее всего)
+helm history cicd-prod
+helm rollback cicd-prod 1
 
-# === Helm ===
-helm list                                  # список релизов
-helm history cicd-demo                     # история деплоев
-helm rollback cicd-demo 1                  # откат к предыдущей версии
-helm get values cicd-demo                  # текущие values
+# Способ 2 — kubectl
+kubectl rollout undo deployment/cicd-prod
+kubectl rollout status deployment/cicd-prod
 
-# === Kubectl ===
-kubectl rollout status deployment/cicd-demo    # статус деплоя
-kubectl rollout history deployment/cicd-demo   # история деплоев
-kubectl rollout undo deployment/cicd-demo      # rollback
-
-# === Minikube ===
-minikube dashboard                         # веб-интерфейс кластера
-minikube image list                        # список образов
+# Способ 3 — GitOps (правильный для продакшна)
+git revert HEAD
+git push
+# ArgoCD автоматически задеплоит предыдущую версию
 ```
 
 ---
 
-## Вопросы на собеседовании и ответы
+## Вопросы на собеседовании — Production CI/CD
 
-**Q: Что такое GitOps?**
-A: Подход, где Git является единственным источником истины (source of truth).
-Любое изменение инфраструктуры делается через git commit.
-ArgoCD следит за репозиторием и автоматически синхронизирует состояние кластера.
+**Q: Почему pipeline упадёт если coverage < 80%?**
+A: В pytest используем флаг `--cov-fail-under=80`. Это заставляет разработчиков
+писать тесты. Без этого coverage постепенно деградирует.
 
-**Q: Чем отличается CI от CD?**
-A: CI (Continuous Integration) — автоматическая сборка и тестирование при каждом коммите.
-CD (Continuous Delivery/Deployment) — автоматическая доставка протестированного кода в среду.
+**Q: Зачем Hadolint?**
+A: Статический анализ Dockerfile. Ловит: использование `latest` тегов,
+отсутствие `--no-cache-dir` у pip, запуск от root, проблемы с кешированием слоёв.
 
-**Q: Зачем нужен Helm?**
-A: Helm — менеджер пакетов для Kubernetes. Позволяет шаблонизировать манифесты,
-управлять версиями релизов, делать rollback одной командой.
+**Q: Почему Trivy с `exit-code: 0` а не `1`?**
+A: В этом конфиге мы не блокируем pipeline — результаты видны в GitHub Security tab.
+В строгом продакшне ставят `exit-code: 1` и `ignore-unfixed: true` чтобы блокировать
+только те CVE, для которых уже есть патч.
 
-**Q: Как ArgoCD узнаёт об изменениях?**
-A: ArgoCD по умолчанию polling репозиторий каждые 3 минуты.
-Можно настроить webhook для мгновенного срабатывания.
+**Q: Зачем отдельные /health и /ready?**
+A: `/health` — liveness probe. Если упал — Kubernetes перезапускает pod.
+`/ready` — readiness probe. Если не готов — Kubernetes не шлёт трафик в этот pod.
+Это позволяет делать graceful startup без даунтайма.
 
-**Q: Что такое selfHeal в ArgoCD?**
-A: Если кто-то вручную изменит ресурс в Kubernetes (kubectl edit),
-ArgoCD автоматически вернёт его к состоянию из Git.
+**Q: Что такое `maxUnavailable: 0` в RollingUpdate?**
+A: Гарантирует, что во время обновления всегда доступно N реплик (нет даунтайма).
+`maxSurge: 1` позволяет временно иметь N+1 под во время апдейта.
 
-**Q: Как сделать rollback?**
-A: Три способа: `helm rollback`, `kubectl rollout undo`,
-или revert коммита в Git (ArgoCD задеплоит старую версию автоматически).
+**Q: Зачем `concurrency: cancel-in-progress`?**
+A: Если разработчик пушит несколько коммитов быстро — отменяем устаревшие запуски.
+Экономит GitHub Actions minutes и ресурсы.
+
+**Q: Что такое non-root контейнер и зачем?**
+A: Контейнер запускается от непривилегированного пользователя (UID 1001).
+Если атакующий получит shell внутри контейнера — у него не будет root прав.
+`capabilities: drop: [ALL]` убирает все Linux capabilities.

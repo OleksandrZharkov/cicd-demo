@@ -7,6 +7,8 @@ metadata:
     version: {{ .Chart.AppVersion }}
 spec:
   replicas: {{ .Values.replicaCount }}
+  strategy:
+    {{- toYaml .Values.strategy | nindent 4 }}
   selector:
     matchLabels:
       app: {{ .Chart.Name }}
@@ -14,7 +16,13 @@ spec:
     metadata:
       labels:
         app: {{ .Chart.Name }}
+        version: {{ .Chart.AppVersion }}
     spec:
+      # Запрещаем запуск от root — продакшн best practice
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
       containers:
         - name: {{ .Chart.Name }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
@@ -29,3 +37,10 @@ spec:
             {{- toYaml .Values.readinessProbe | nindent 12 }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          # Запрещаем эскалацию привилегий внутри контейнера
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL

@@ -1,21 +1,16 @@
 flask==3.0.3
 gunicorn==22.0.0
 
-# FIX: python:3.12-slim не включает setuptools, а opentelemetry-instrumentation
-# требует pkg_resources (часть setuptools). setuptools>=80 убрал pkg_resources.
-# Решение: явно закрепить setuptools<80
+# FIX: python:3.12-slim не включает setuptools.
+# setuptools>=80 удалил pkg_resources, который требует opentelemetry-instrumentation.
 setuptools<80
 
-# OpenTelemetry core — версии API и SDK всегда совпадают
-# Проверено на PyPI: https://pypi.org/project/opentelemetry-sdk/
+# OpenTelemetry — версии проверены на PyPI (март 2025)
 opentelemetry-api==1.39.1
 opentelemetry-sdk==1.39.1
-
-# Flask auto-instrumentation
-# Версия 0.60b1 соответствует opentelemetry-api==1.39.1
-# Проверено: https://pypi.org/project/opentelemetry-instrumentation/
 opentelemetry-instrumentation-flask==0.60b1
-
-# OTLP gRPC exporters (отправка в OTel Collector)
-# Проверено: https://pypi.org/project/opentelemetry-exporter-otlp-proto-grpc/
 opentelemetry-exporter-otlp-proto-grpc==1.39.1
+
+# Tests (только для CI, не попадают в финальный образ)
+pytest==8.3.5
+pytest-cov==6.0.0
