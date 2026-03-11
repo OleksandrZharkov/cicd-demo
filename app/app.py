@@ -27,7 +27,9 @@ resource = Resource.create(
     }
 )
 
-otlp_endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "otel-collector-opentelemetry-collector:4317")
+otlp_endpoint = os.getenv(
+    "OTEL_EXPORTER_OTLP_ENDPOINT", "otel-collector-opentelemetry-collector:4317"
+)
 
 tracer_provider = TracerProvider(resource=resource)
 tracer_provider.add_span_processor(
@@ -104,13 +106,13 @@ def home():
 
 @app.route("/health")
 def health():
-    """Liveness probe — не трейсится."""
+    """Liveness probe."""
     return jsonify({"status": "healthy"}), 200
 
 
 @app.route("/ready")
 def ready():
-    """Readiness probe — не трейсится."""
+    """Readiness probe."""
     return jsonify({"status": "ready"}), 200
 
 
@@ -134,8 +136,4 @@ def work():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
-PYEOF
-
-git add app/app.py
-git commit -m "fix: use SimpleSpanProcessor instead of Batch for gunicorn compatibility"
-git push
+    
