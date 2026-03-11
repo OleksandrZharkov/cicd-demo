@@ -1,44 +1,40 @@
+import logging
 import os
 import time
-import logging
-from flask import Flask, jsonify, request
 
-# ── OpenTelemetry ─────────────────────────────────────────────
-from opentelemetry import trace, metrics
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from flask import Flask, jsonify, request
+from opentelemetry import metrics, trace
+from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
+from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+from opentelemetry.instrumentation.flask import FlaskInstrumentor
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.sdk.resources import Resource
-from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
-from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
-from opentelemetry.instrumentation.flask import FlaskInstrumentor
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
-# ── Logging setup ─────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
 logger = logging.getLogger("cicd-prod")
 
-# ── OTel Resource ─────────────────────────────────────────────
-resource = Resource.create({
-    "service.name":           os.getenv("OTEL_SERVICE_NAME", "cicd-prod"),
-    "service.version":        os.getenv("APP_VERSION", "1.0.0"),
-    "deployment.environment": os.getenv("ENVIRONMENT", "production"),
-})
+resource = Resource.create(
+    {
+        "service.name": os.getenv("OTEL_SERVICE_NAME", "cicd-prod"),
+        "service.version": os.getenv("APP_VERSION", "1.0.0"),
+        "deployment.environment": os.getenv("ENVIRONMENT", "production"),
+    }
+)
 
-# ── gRPC endpoint — без http://, только host:port ─────────────
 otlp_endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "otel-collector:4317")
 
-# ── Tracing ───────────────────────────────────────────────────
 tracer_provider = TracerProvider(resource=resource)
 tracer_provider.add_span_processor(
     BatchSpanProcessor(OTLPSpanExporter(endpoint=otlp_endpoint, insecure=True))
 )
 trace.set_tracer_provider(tracer_provider)
 
-# ── Metrics ───────────────────────────────────────────────────
 meter_provider = MeterProvider(
     resource=resource,
     metric_readers=[
@@ -51,7 +47,7 @@ meter_provider = MeterProvider(
 metrics.set_meter_provider(meter_provider)
 
 tracer = trace.get_tracer("cicd-prod.tracer")
-meter  = metrics.get_meter("cicd-prod.meter")
+meter = metrics.get_meter("cicd-prod.meter")
 
 request_counter = meter.create_counter(
     name="http_requests_total",
@@ -64,11 +60,10 @@ request_latency = meter.create_histogram(
     unit="ms",
 )
 
-# ── Flask app ─────────────────────────────────────────────────
 app = Flask(__name__)
 FlaskInstrumentor().instrument_app(app, excluded_urls="health,ready")
 
-VERSION     = os.getenv("APP_VERSION", "1.0.0")
+VERSION = os.getenv("APP_VERSION", "1.0.0")
 ENVIRONMENT = os.getenv("ENVIRONMENT", "production")
 
 
@@ -80,11 +75,14 @@ def start_timer():
 @app.after_request
 def record_metrics(response):
     duration_ms = (time.time() - request.start_time) * 1000
-    request_counter.add(1, {
-        "route":  request.path,
-        "method": request.method,
-        "status": str(response.status_code),
-    })
+    request_counter.add(
+        1,
+        {
+            "route": request.path,
+            "method": request.method,
+            "status": str(response.status_code),
+        },
+    )
     request_latency.record(duration_ms, {"route": request.path})
     return response
 
@@ -94,12 +92,14 @@ def home():
     with tracer.start_as_current_span("home-handler") as span:
         span.set_attribute("app.version", VERSION)
         logger.info("home endpoint called")
-        return jsonify({
-            "message":     "Production CI/CD Demo",
-            "version":     VERSION,
-            "environment": ENVIRONMENT,
-            "status":      "ok",
-        })
+        return jsonify(
+            {
+                "message": "Production CI/CD Demo",
+                "version": VERSION,
+                "environment": ENVIRONMENT,
+                "status": "ok",
+            }
+        )
 
 
 @app.route("/health")
