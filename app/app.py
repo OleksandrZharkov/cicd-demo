@@ -11,7 +11,7 @@ from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 
 logging.basicConfig(
     level=logging.INFO,
@@ -27,11 +27,11 @@ resource = Resource.create(
     }
 )
 
-otlp_endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "otel-collector:4317")
+otlp_endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "otel-collector-opentelemetry-collector:4317")
 
 tracer_provider = TracerProvider(resource=resource)
 tracer_provider.add_span_processor(
-    BatchSpanProcessor(OTLPSpanExporter(endpoint=otlp_endpoint, insecure=True))
+    SimpleSpanProcessor(OTLPSpanExporter(endpoint=otlp_endpoint, insecure=True))
 )
 trace.set_tracer_provider(tracer_provider)
 
@@ -94,7 +94,7 @@ def home():
         logger.info("home endpoint called")
         return jsonify(
             {
-                "message": "Production CI/CD Demo",
+                "message": "Hello from CI/CD Demo with OpenTelemetry!",
                 "version": VERSION,
                 "environment": ENVIRONMENT,
                 "status": "ok",
@@ -134,3 +134,8 @@ def work():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+PYEOF
+
+git add app/app.py
+git commit -m "fix: use SimpleSpanProcessor instead of Batch for gunicorn compatibility"
+git push
