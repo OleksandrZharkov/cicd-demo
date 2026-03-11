@@ -20,7 +20,7 @@ WORKDIR /app
 
 COPY --from=builder /install /usr/local
 
-# context в workflow передаётся как корень репозитория (context: .)
+
 # поэтому путь к файлу — app/app.py
 COPY app/app.py .
 
