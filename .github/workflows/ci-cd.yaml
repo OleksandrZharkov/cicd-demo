@@ -1,26 +1,197 @@
-name: CI/CD Pipeline
+name: Production CI/CD Pipeline
 
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "helm/**"
   pull_request:
     branches: [main]
 
 env:
-  IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/cicd-demo
+  IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/cicd-prod
+  PYTHON_VERSION: "3.12"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  # ── Job 1: Build & Push Docker image ────────────────────────
-  build-and-push:
-    name: Build & Push to Docker Hub
-    runs-on: ubuntu-latest
 
+  lint:
+    name: Lint
+    runs-on: ubuntu-24.04
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set image tag (short SHA)
-        run: echo "IMAGE_TAG=${GITHUB_SHA::7}" >> $GITHUB_ENV
+      - name: Lint Dockerfile
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: app/Dockerfile
+          config: .hadolint.yaml
+          failure-threshold: error
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install linting tools
+        run: pip install flake8==7.1.1 black==24.10.0
+
+      - name: Check Python formatting (black)
+        run: black --check --diff app/app.py
+
+      - name: Lint Python (flake8)
+        run: flake8 app/app.py --max-line-length=120 --ignore=E501
+
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-24.04
+    needs: lint
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          cd app
+          pip install "setuptools<80"
+          pip install -r requirements.txt
+
+      - name: Run tests with coverage
+        run: |
+          cd app
+          pytest tests/ -v \
+            --cov=. \
+            --cov-report=term-missing \
+            --cov-report=xml:coverage.xml \
+            --cov-fail-under=80
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: app/coverage.xml
+          retention-days: 7
+
+  build:
+    name: Build Docker Image
+    runs-on: ubuntu-24.04
+    needs: test
+    outputs:
+      image_tag: ${{ steps.set_tag.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set image tag
+        id: set_tag
+        run: |
+          TAG="${GITHUB_SHA::7}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "IMAGE_TAG=$TAG" >> "$GITHUB_ENV"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image (local, no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./app/Dockerfile
+          push: false
+          load: true
+          tags: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Export image to tar
+        run: |
+          docker save "${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}" \
+            -o /tmp/image.tar
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-image
+          path: /tmp/image.tar
+          retention-days: 1
+
+  security-scan:
+    name: Security Scan (Trivy)
+    runs-on: ubuntu-24.04
+    needs: build
+    permissions:
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+          path: /tmp
+
+      - name: Load Docker image
+        run: docker load -i /tmp/image.tar
+
+      - name: Set image tag
+        run: echo "IMAGE_TAG=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+
+      - name: Run Trivy vulnerability scan
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          image-ref: "${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}"
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          vuln-type: os,library
+          exit-code: "0"
+
+      - name: Upload Trivy results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-results.sarif
+
+      - name: Upload Trivy results as artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trivy-results
+          path: trivy-results.sarif
+          retention-days: 7
+
+  push:
+    name: Push to Docker Hub
+    runs-on: ubuntu-24.04
+    needs: security-scan
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Download image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+          path: /tmp
+
+      - name: Load Docker image
+        run: docker load -i /tmp/image.tar
+
+      - name: Set image tag
+        run: echo "IMAGE_TAG=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
 
       - name: Login to Docker Hub
         uses: docker/login-action@v3
@@ -28,39 +199,36 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v5
-        with:
-          context: ./app
-          push: ${{ github.ref == 'refs/heads/main' }}
-          tags: |
-            ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
-            ${{ env.IMAGE_NAME }}:latest
+      - name: Push image
+        run: |
+          docker push "${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}"
+          docker tag  "${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}" \
+                      "${{ env.IMAGE_NAME }}:latest"
+          docker push "${{ env.IMAGE_NAME }}:latest"
 
-  # ── Job 2: Update Helm values (triggers ArgoCD sync) ─────────
-  update-helm-tag:
-    name: Update Helm image tag
-    runs-on: ubuntu-latest
-    needs: build-and-push
+  deploy:
+    name: Update Helm Tag (GitOps)
+    runs-on: ubuntu-24.04
+    needs: push
     if: github.ref == 'refs/heads/main'
-
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.GH_PAT }}   # Personal Access Token with repo write
+          token: ${{ secrets.GH_PAT }}
 
       - name: Set image tag
-        run: echo "IMAGE_TAG=${GITHUB_SHA::7}" >> $GITHUB_ENV
+        run: echo "IMAGE_TAG=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
 
       - name: Update image tag in values.yaml
         run: |
-          sed -i "s|tag: .*|tag: \"${{ env.IMAGE_TAG }}\"|" helm/cicd-demo/values.yaml
+          sed -i "s|tag: .*|tag: \"${{ env.IMAGE_TAG }}\"|" \
+            helm/cicd-prod/values.yaml
 
-      - name: Commit and push updated values.yaml
+      - name: Commit and push
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add helm/cicd-demo/values.yaml
-          git commit -m "ci: update image tag to ${{ env.IMAGE_TAG }} [skip ci]"
-          git push
+          git add helm/cicd-prod/values.yaml
+          git diff --staged --quiet || \
+            git commit
