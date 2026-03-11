@@ -17,11 +17,11 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
-logger = logging.getLogger("cicd-prod")
+logger = logging.getLogger("cicd-demo")
 
 resource = Resource.create(
     {
-        "service.name": os.getenv("OTEL_SERVICE_NAME", "cicd-prod"),
+        "service.name": os.getenv("OTEL_SERVICE_NAME", "cicd-demo"),
         "service.version": os.getenv("APP_VERSION", "1.0.0"),
         "deployment.environment": os.getenv("ENVIRONMENT", "production"),
     }
@@ -46,8 +46,8 @@ meter_provider = MeterProvider(
 )
 metrics.set_meter_provider(meter_provider)
 
-tracer = trace.get_tracer("cicd-prod.tracer")
-meter = metrics.get_meter("cicd-prod.meter")
+tracer = trace.get_tracer("cicd-demo.tracer")
+meter = metrics.get_meter("cicd-demo.meter")
 
 request_counter = meter.create_counter(
     name="http_requests_total",
