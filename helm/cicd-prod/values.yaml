@@ -3,7 +3,7 @@ replicaCount: 2
 image:
   repository: ozharkov/cicd-prod   # ← заменить!
   pullPolicy: IfNotPresent
-  tag: "latest"
+  tag: "500b3af"
 
 service:
   type: NodePort
