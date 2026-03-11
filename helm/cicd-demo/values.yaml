@@ -1,7 +1,7 @@
 replicaCount: 2
 
 image:
-  repository: ozharkov/cicd-prod   # ← заменить!
+  repository: ozharkov/cicd-demo   # ← заменить!
   pullPolicy: IfNotPresent
   tag: "a8416c3"
 
@@ -16,7 +16,7 @@ env:
   - name: APP_VERSION
     value: "1.0.0"
   - name: OTEL_SERVICE_NAME
-    value: "cicd-prod"
+    value: "cicd-demo"
   - name: OTEL_EXPORTER_OTLP_ENDPOINT
     value: "otel-collector-opentelemetry-collector:4317"
   - name: ENVIRONMENT
