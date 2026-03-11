@@ -1,9 +1,7 @@
 import os
-import time
-import logging
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify
 
-# ── OpenTelemetry ─────────────────────────────────────────────
+# ── OpenTelemetry imports ──────────────────────────────────────
 from opentelemetry import trace, metrics
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
@@ -14,123 +12,81 @@ from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExport
 from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
 from opentelemetry.instrumentation.flask import FlaskInstrumentor
 
-# ── Logging setup ─────────────────────────────────────────────
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s %(message)s",
-)
-logger = logging.getLogger("cicd-prod")
-
-# ── OTel Resource ─────────────────────────────────────────────
+# ── Настройка OTel ресурса (метаданные сервиса) ───────────────
 resource = Resource.create({
-    "service.name":           os.getenv("OTEL_SERVICE_NAME", "cicd-prod"),
-    "service.version":        os.getenv("APP_VERSION", "1.0.0"),
-    "deployment.environment": os.getenv("ENVIRONMENT", "production"),
+    "service.name": os.getenv("OTEL_SERVICE_NAME", "cicd-demo"),
+    "service.version": os.getenv("APP_VERSION", "1.0.0"),
+    "deployment.environment": os.getenv("ENVIRONMENT", "development"),
 })
 
-# ── gRPC endpoint — без http://, только host:port ─────────────
-otlp_endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "otel-collector:4317")
+# ── Настройка Tracing ─────────────────────────────────────────
+otlp_endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4317")
 
-# ── Tracing ───────────────────────────────────────────────────
 tracer_provider = TracerProvider(resource=resource)
-tracer_provider.add_span_processor(
-    BatchSpanProcessor(OTLPSpanExporter(endpoint=otlp_endpoint, insecure=True))
-)
+span_exporter = OTLPSpanExporter(endpoint=otlp_endpoint, insecure=True)
+tracer_provider.add_span_processor(BatchSpanProcessor(span_exporter))
 trace.set_tracer_provider(tracer_provider)
 
-# ── Metrics ───────────────────────────────────────────────────
-meter_provider = MeterProvider(
-    resource=resource,
-    metric_readers=[
-        PeriodicExportingMetricReader(
-            OTLPMetricExporter(endpoint=otlp_endpoint, insecure=True),
-            export_interval_millis=5000,
-        )
-    ],
-)
+# ── Настройка Metrics ─────────────────────────────────────────
+metric_exporter = OTLPMetricExporter(endpoint=otlp_endpoint, insecure=True)
+metric_reader = PeriodicExportingMetricReader(metric_exporter, export_interval_millis=5000)
+meter_provider = MeterProvider(resource=resource, metric_readers=[metric_reader])
 metrics.set_meter_provider(meter_provider)
 
-tracer = trace.get_tracer("cicd-prod.tracer")
-meter  = metrics.get_meter("cicd-prod.meter")
+# ── Получение tracer и meter ───────────────────────────────────
+tracer = trace.get_tracer("cicd-demo.tracer")
+meter  = metrics.get_meter("cicd-demo.meter")
 
+# ── Кастомные метрики ─────────────────────────────────────────
 request_counter = meter.create_counter(
     name="http_requests_total",
-    description="Total HTTP requests",
+    description="Total number of HTTP requests",
     unit="1",
 )
-request_latency = meter.create_histogram(
-    name="http_request_duration_ms",
-    description="HTTP request latency in ms",
-    unit="ms",
-)
 
-# ── Flask app ─────────────────────────────────────────────────
+# ── Flask приложение ──────────────────────────────────────────
 app = Flask(__name__)
-FlaskInstrumentor().instrument_app(app, excluded_urls="health,ready")
+FlaskInstrumentor().instrument_app(app)   # автоматическая трассировка всех маршрутов
 
-VERSION     = os.getenv("APP_VERSION", "1.0.0")
-ENVIRONMENT = os.getenv("ENVIRONMENT", "production")
-
-
-@app.before_request
-def start_timer():
-    request.start_time = time.time()
-
-
-@app.after_request
-def record_metrics(response):
-    duration_ms = (time.time() - request.start_time) * 1000
-    request_counter.add(1, {
-        "route":  request.path,
-        "method": request.method,
-        "status": str(response.status_code),
-    })
-    request_latency.record(duration_ms, {"route": request.path})
-    return response
-
+VERSION = os.getenv("APP_VERSION", "1.0.0")
 
 @app.route("/")
 def home():
+    # Инкремент счётчика запросов
+    request_counter.add(1, {"route": "/", "method": "GET"})
+
+    # Создание кастомного спана внутри автоматического
     with tracer.start_as_current_span("home-handler") as span:
         span.set_attribute("app.version", VERSION)
-        logger.info("home endpoint called")
+        span.set_attribute("custom.label", "hello-span")
         return jsonify({
-            "message":     "Production CI/CD Demo",
-            "version":     VERSION,
-            "environment": ENVIRONMENT,
-            "status":      "ok",
+            "message": "Hello from CI/CD Demo with OpenTelemetry!",
+            "version": VERSION,
+            "status": "ok",
+            "tracing": "enabled"
         })
-
 
 @app.route("/health")
 def health():
-    """Liveness probe — не трейсится."""
     return jsonify({"status": "healthy"}), 200
-
-
-@app.route("/ready")
-def ready():
-    """Readiness probe — не трейсится."""
-    return jsonify({"status": "ready"}), 200
-
 
 @app.route("/work")
 def work():
-    """Симуляция бизнес-логики с вложенными spans."""
-    with tracer.start_as_current_span("work-handler") as span:
-        span.set_attribute("work.type", "simulation")
+    """Эмулирует работу с вложенными спанами — хорошо видно в Jaeger."""
+    request_counter.add(1, {"route": "/work", "method": "GET"})
 
-        with tracer.start_as_current_span("db-query") as db_span:
-            db_span.set_attribute("db.system", "postgresql")
-            db_span.set_attribute("db.statement", "SELECT * FROM orders")
-            time.sleep(0.05)
+    with tracer.start_as_current_span("work-handler") as parent_span:
+        parent_span.set_attribute("work.type", "simulation")
+
+        with tracer.start_as_current_span("db-query-simulation") as child_span:
+            child_span.set_attribute("db.system", "postgresql")
+            child_span.set_attribute("db.statement", "SELECT * FROM items")
+            import time; time.sleep(0.05)   # симуляция запроса к БД
 
         with tracer.start_as_current_span("cache-lookup") as cache_span:
             cache_span.set_attribute("cache.hit", True)
 
-        logger.info("work endpoint completed")
-        return jsonify({"result": "ok", "spans": "visible in Jaeger"})
-
+        return jsonify({"result": "work done", "spans": "check Jaeger!"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
