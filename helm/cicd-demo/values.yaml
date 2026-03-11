@@ -30,7 +30,6 @@ resources:
     cpu: 100m
     memory: 128Mi
 
-# Разделяем liveness и readiness — продакшн best practice
 livenessProbe:
   httpGet:
     path: /health
