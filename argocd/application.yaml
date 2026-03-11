@@ -6,7 +6,7 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://github.com/OleksandrZharkov/cicd-demo   # ← заменить!
+    repoURL: https://github.com/OleksandrZharkov/cicd-demo  
     targetRevision: HEAD
     path: helm/cicd-demo
   destination:
